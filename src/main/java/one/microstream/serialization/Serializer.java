@@ -22,11 +22,8 @@ package one.microstream.serialization;
  */
 
 import java.io.Closeable;
-import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.util.WeakHashMap;
-import java.util.function.Consumer;
-import java.util.function.Predicate;
 
 import one.microstream.X;
 import one.microstream.collections.types.XGettingCollection;
@@ -43,9 +40,7 @@ import one.microstream.persistence.types.PersistenceSource;
 import one.microstream.persistence.types.PersistenceTarget;
 import one.microstream.persistence.types.PersistenceTypeDictionaryManager;
 import one.microstream.persistence.types.PersistenceTypeHandlerManager;
-import one.microstream.reflect.XReflect;
 import one.microstream.storage.types.Database;
-import one.microstream.util.traversing.ObjectGraphTraverser;
 
 
 public interface Serializer extends Closeable
@@ -62,25 +57,46 @@ public interface Serializer extends Closeable
 		return get(Thread.currentThread().getContextClassLoader());
 	}
 	
-	public static Serializer get(final ClassLoader classLoader)
+	public static Serializer get(final Class<?>... whitelist)
 	{
-		return Static.get(classLoader, XReflect::isNotTransient);
+		return get(
+			Thread.currentThread().getContextClassLoader(),
+			BinaryPersistence.Foundation()                ,
+			X.List(whitelist)
+		);
 	}
 	
-	public static Serializer get(final ClassLoader classLoader, final Predicate<? super Field> fieldPredicate)
+	public static Serializer get(final ClassLoader classLoader)
 	{
-		return Static.get(classLoader, fieldPredicate);
+		return get(
+			classLoader                   ,
+			BinaryPersistence.Foundation(),
+			X.empty()
+		);
+	}
+	
+	public static Serializer get(
+		final ClassLoader                    classLoader,
+		final BinaryPersistenceFoundation<?> foundation ,
+		final Iterable<Class<?>>             whitelist
+	)
+	{
+		return Static.get(classLoader, foundation, whitelist);
 	}
 	
 	public static class Static
 	{
 		private final static WeakHashMap<ClassLoader, Serializer> cache = new WeakHashMap<>();
 				
-		static synchronized Serializer get(final ClassLoader classLoader, final Predicate<? super Field> fieldPredicate)
+		static synchronized Serializer get(
+			final ClassLoader                    classLoader,
+			final BinaryPersistenceFoundation<?> foundation ,
+			final Iterable<Class<?>>             whitelist
+		)
 		{
 			return cache.computeIfAbsent(
 				classLoader,
-				cl -> new Serializer.Default(fieldPredicate)
+				cl -> new Serializer.Default(foundation, whitelist)
 			);
 		}
 		
@@ -92,24 +108,24 @@ public interface Serializer extends Closeable
 	
 	public static class Default implements Serializer
 	{
-		private final Predicate<? super Field> fieldPredicate;
-		private PersistenceManager<Binary>     persistenceManager;
-		private ObjectGraphTraverser           typeHandlerEnsurer;
-		private Binary                         input;
-		private Binary                         output;
+		private final BinaryPersistenceFoundation<?> foundation;
+		private final Iterable<Class<?>>             whitelist;
+		private PersistenceManager<Binary>           persistenceManager;
+		private Binary                               input;
+		private Binary                               output;
 		
-		Default(final Predicate<? super Field> fieldPredicate)
+		Default(final BinaryPersistenceFoundation<?> foundation, final Iterable<Class<?>> whitelist)
 		{
 			super();
 			
-			this.fieldPredicate = fieldPredicate;
+			this.foundation = foundation;
+			this.whitelist  = whitelist ;
 		}
 		
 		@Override
 		public synchronized byte[] serialize(final Object object)
 		{
 			this.lazyInit();
-			this.typeHandlerEnsurer.traverse(object);
 			this.persistenceManager.store(object);
 			return this.toBytes(this.output.buffers());
 		}
@@ -133,7 +149,6 @@ public interface Serializer extends Closeable
 				this.persistenceManager = null;
 				this.input              = null;
 				this.output             = null;
-				this.typeHandlerEnsurer = null;
 			}
 		}
 		
@@ -144,7 +159,7 @@ public interface Serializer extends Closeable
 				final PersistenceSourceBinary source = ()   -> X.Constant(this.input);
 				final PersistenceTargetBinary target = data -> this.output = data;
 				
-				final BinaryPersistenceFoundation<?> foundation = BinaryPersistence.Foundation()
+				final BinaryPersistenceFoundation<?> foundation = this.foundation
 					.setPersister(Database.New(Serializer.class.getName()))
 					.setPersistenceSource(source)
 					.setPersistenceTarget(target)
@@ -160,24 +175,13 @@ public interface Serializer extends Closeable
 				
 				final PersistenceTypeHandlerManager<Binary> typeHandlerManager = foundation.getTypeHandlerManager();
 				typeHandlerManager.initialize();
+				this.whitelist.forEach(typeHandlerManager::ensureTypeHandler);
 				
 				this.persistenceManager = foundation.createPersistenceManager();
-				
-				final Consumer<Object> objectAcceptor = obj -> {
-					if(obj != null)
-					{
-						typeHandlerManager.ensureTypeHandler(obj);
-					}
-				};
-				this.typeHandlerEnsurer = ObjectGraphTraverser.Builder()
-					.modeFull()
-					.fieldPredicate(this.fieldPredicate)
-					.acceptorLogic(objectAcceptor)
-					.buildObjectGraphTraverser();
 			}
 			else
 			{
-				this.persistenceManager.objectRegistry().clearAll();
+				this.persistenceManager.objectRegistry().truncateAll();
 			}
 		}
 		
