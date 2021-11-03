@@ -75,6 +75,15 @@ public interface Serializer extends Closeable
 		);
 	}
 	
+	public static Serializer get(final BinaryPersistenceFoundation<?> foundation)
+	{
+		return get(
+			Thread.currentThread().getContextClassLoader(),
+			foundation                                    ,
+			X.empty()
+		);
+	}
+	
 	public static Serializer get(
 		final ClassLoader                    classLoader,
 		final BinaryPersistenceFoundation<?> foundation ,
